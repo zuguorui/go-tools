@@ -12,16 +12,29 @@ import (
 
 const helpText = `This is enhanced adb tool.
 Usage: eadb <command> [args...]
+Notice: for commands that may affect multiple devices, you will be prompted to select target device(s).
+Notice: <*keyword*> means CONTAINS match surrounded by *. package name means exact match.
 command:
-  setting                   open system setting app
-  launcher                  open launcher
-  packages                  list all installed packages
-  app-info <keyword>        get app info for a package name contains keyword (e.g., app-info com.example.app)
-  screenshot <file>         take a screenshot and save to local file
-  screenrecord <file> [-duration <seconds>]     record screen to local file, optional duration in seconds, up to 180 seconds
-  uninstall <keyword>       uninstall app(s) matching the keyword in package name
-  clear-data <keyword>      clear app data for app(s) matching the keyword in package name
-  force-stop <keyword>      force stop app(s) matching the keyword in package name
+    setting
+        open system setting app
+    launcher
+        open launcher
+    packages
+        list all installed packages
+    app-info <*keyword*|package name>
+        get app info for a package name (e.g., app-info com.example.app)
+    screenshot <file>
+        take a screenshot and save to local file
+    screenrecord <file> [-duration <seconds>]
+      record screen to local file, optional duration in seconds, up to 180 seconds
+    uninstall <*keyword*|package name>
+        uninstall app(s) matching the keyword in package name
+    clear-data <*keyword*|package name>
+        clear app data for app(s) matching the keyword in package name
+    force-stop <*keyword*|package name>
+        force stop app(s) matching the keyword in package name
+    start <*keyword*|package name>
+        start app matching the keyword in package name
 other commands will be transmited to adb as it is.
 `
 
@@ -95,6 +108,12 @@ func main() {
 			return
 		}
 		execForceStopApp(os.Args[2])
+	case "start":
+		if len(os.Args) < 3 {
+			fmt.Println("Please provide keyword to match packages for start.")
+			return
+		}
+		execStartApp(os.Args[2])
 	default:
 		execMultiDeviceStdCommand(os.Args[1:]...)
 	}
@@ -128,7 +147,7 @@ func getDevices() []string {
 }
 
 // 让用户选择设备
-func selectDevice(onlySingle bool) []string {
+func selectDevice(single bool) []string {
 
 	devices := getDevices()
 	if len(devices) == 0 {
@@ -144,7 +163,7 @@ func selectDevice(onlySingle bool) []string {
 		fmt.Printf("[%d] %s\n", i+1, d)
 	}
 
-	if onlySingle {
+	if single {
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("Input index to select a device: ")
 		for {
@@ -315,7 +334,7 @@ func execScreenRecord(localPath string, duration *int) {
 /*
 获取包名。若keyword为nil，则获取所有包名。如果keyword以*开始或结束，则以contains匹配。否则精确匹配。
 */
-func getPackages(device string, keyword *string) ([]string, error) {
+func selectPackage(device string, keyword *string, single bool) ([]string, error) {
 	// 1. 获取包列表
 	cmd := exec.Command("adb", "-s", device, "shell", "pm", "list", "packages")
 	outBytes, err := cmd.Output()
@@ -331,28 +350,67 @@ func getPackages(device string, keyword *string) ([]string, error) {
 		}
 	}
 
-	if keyword == nil {
+	if len(packageList) == 1 {
 		return packageList, nil
 	}
 
-	finalKeyword := strings.ToLower(*keyword)
-
-	var result []string
-	if strings.HasPrefix(finalKeyword, "*") && strings.HasSuffix(finalKeyword, "*") {
-		trimmedKeyword := strings.Trim(finalKeyword, "*")
-		for _, pkg := range packageList {
-			if strings.Contains(pkg, trimmedKeyword) {
-				result = append(result, pkg)
-			}
-		}
+	var filterdPackageList []string
+	if keyword == nil {
+		filterdPackageList = packageList
 	} else {
-		for _, pkg := range packageList {
-			if pkg == finalKeyword {
-				result = append(result, pkg)
+		finalKeyword := strings.ToLower(*keyword)
+		if strings.HasPrefix(finalKeyword, "*") && strings.HasSuffix(finalKeyword, "*") {
+			trimmedKeyword := strings.Trim(finalKeyword, "*")
+			for _, pkg := range packageList {
+				if strings.Contains(pkg, trimmedKeyword) {
+					filterdPackageList = append(filterdPackageList, pkg)
+				}
+			}
+		} else {
+			for _, pkg := range packageList {
+				if pkg == finalKeyword {
+					filterdPackageList = append(filterdPackageList, pkg)
+				}
 			}
 		}
 	}
-	return result, nil
+
+	if len(filterdPackageList) > 1 {
+		fmt.Println("Multiple matching packages found:")
+		if single {
+			for i, pkg := range filterdPackageList {
+				fmt.Printf("[%d] %s\n", i+1, pkg)
+			}
+			fmt.Print("Please enter the index to select package: ")
+			var input int
+			fmt.Scanln(&input)
+			if input <= 0 || input > len(filterdPackageList) {
+				fmt.Println("Invalid index, operation cancelled.")
+				return nil, fmt.Errorf("invalid index")
+			}
+			return []string{filterdPackageList[input-1]}, nil
+		} else {
+			for i, pkg := range filterdPackageList {
+				fmt.Printf("[%d] %s\n", i+1, pkg)
+			}
+			fmt.Print("Please enter the index to select package, or type \"all\" to select all matched packages: ")
+			var input string
+			fmt.Scanln(&input)
+			input = strings.TrimSpace(strings.ToLower(input))
+			if input == "all" {
+				return filterdPackageList, nil
+			} else {
+				index, err := strconv.Atoi(input)
+				if err != nil || index <= 0 || index > len(filterdPackageList) {
+					fmt.Println("Invalid index, operation cancelled.")
+					return nil, fmt.Errorf("invalid index")
+				}
+				return []string{filterdPackageList[index-1]}, nil
+			}
+		}
+	} else {
+		return filterdPackageList, nil
+	}
 }
 
 func execDeleteApp(keyword string) {
@@ -362,47 +420,14 @@ func execDeleteApp(keyword string) {
 			return
 		}
 		device := devices[0]
-		packages, err := getPackages(device, &keyword)
+		packages, err := selectPackage(device, &keyword, false)
 		if err != nil {
-			fmt.Println("failed to get packages:", err)
+			fmt.Println("failed to select packages:", err)
 			return
 		}
 
-		// 3. 匹配结果处理
-		if len(packages) == 0 {
-			fmt.Println("no matching packages found.")
-			return
-		} else if len(packages) == 1 {
-			fmt.Printf("Found one matching package: %s. Confirm uninstall? (y/N): ", packages[0])
-			var input string
-			fmt.Scanln(&input)
-			if strings.ToLower(input) == "y" {
-				execStdCommand(device, "uninstall", packages[0])
-			} else {
-				fmt.Println("uninstall cancelled.")
-			}
-			return
-		} else {
-			fmt.Println("Multiple matching packages found:")
-			for i, pkg := range packages {
-				fmt.Printf("[%d] %s\n", i+1, pkg)
-			}
-			fmt.Print("Please enter the index to uninstall, or type \"all\" to uninstall all matched package: ")
-			var input string
-			fmt.Scanln(&input)
-			input = strings.TrimSpace(strings.ToLower(input))
-			if input == "all" {
-				for _, pkg := range packages {
-					execStdCommand(device, "uninstall", pkg)
-				}
-			} else {
-				index, err := strconv.Atoi(input)
-				if err != nil || index <= 0 || index > len(packages) {
-					fmt.Println("Invalid index, uninstall cancelled.")
-					return
-				}
-				execStdCommand(device, "uninstall", packages[index-1])
-			}
+		for _, pkg := range packages {
+			execStdCommand(device, "uninstall", pkg)
 		}
 	} else {
 		devices := selectDevice(false)
@@ -417,37 +442,19 @@ func execDeleteApp(keyword string) {
 }
 
 func execGetAppInfo(keyword string) {
-	devices := selectDevice(false)
+	devices := selectDevice(true)
 	if len(devices) == 0 {
 		return
 	}
 	device := devices[0]
 
-	packages, err := getPackages(device, &keyword)
-	if err != nil {
-		fmt.Println("failed to get packages:", err)
+	packages, err := selectPackage(device, &keyword, true)
+	if err != nil || len(packages) == 0 {
+		fmt.Println("failed to select packages:", err)
 		return
 	}
 
-	// 3. 匹配结果处理
-	if len(packages) == 0 {
-		fmt.Println("no matching packages found.")
-	} else if len(packages) == 1 {
-		execStdCommand(device, "shell", "dumpsys", "package", packages[0])
-	} else {
-		fmt.Println("Multiple matching packages found:")
-		for i, pkg := range packages {
-			fmt.Printf("[%d] %s\n", i+1, pkg)
-		}
-		fmt.Print("Please enter the index to get app info: ")
-		var input int
-		fmt.Scanln(&input)
-		if input <= 0 || input > len(packages) {
-			fmt.Println("Invalid index, operation cancelled.")
-			return
-		}
-		execStdCommand(device, "shell", "dumpsys", "package", packages[input-1])
-	}
+	execStdCommand(device, "shell", "dumpsys", "package", packages[0])
 }
 
 func execClearAppData(keyword string) {
@@ -457,49 +464,15 @@ func execClearAppData(keyword string) {
 			return
 		}
 		device := devices[0]
-		packages, err := getPackages(device, &keyword)
-		if err != nil {
-			fmt.Println("failed to get packages:", err)
+		packages, err := selectPackage(device, &keyword, false)
+		if err != nil || len(packages) == 0 {
+			fmt.Println("failed to select packages:", err)
 			return
 		}
 
-		// 3. 匹配结果处理
-		if len(packages) == 0 {
-			fmt.Println("no matching packages found.")
-			return
-		} else if len(packages) == 1 {
-			fmt.Printf("Found one matching package: %s. Confirm clear app data? (y/N): ", packages[0])
-			var input string
-			fmt.Scanln(&input)
-			if strings.ToLower(input) == "y" {
-				execStdCommand(device, "shell", "pm", "clear", packages[0])
-			} else {
-				fmt.Println("clear app data cancelled.")
-			}
-			return
-		} else {
-			fmt.Println("Multiple matching packages found:")
-			for i, pkg := range packages {
-				fmt.Printf("[%d] %s\n", i+1, pkg)
-			}
-			fmt.Print("Please enter the index to clear app data, or type \"all\" to clear app data for all matched package: ")
-			var input string
-			fmt.Scanln(&input)
-			input = strings.TrimSpace(strings.ToLower(input))
-			if input == "all" {
-				for _, pkg := range packages {
-					execStdCommand(device, "shell", "pm", "clear", pkg)
-				}
-			} else {
-				index, err := strconv.Atoi(input)
-				if err != nil || index <= 0 || index > len(packages) {
-					fmt.Println("Invalid index, operation cancelled.")
-					return
-				}
-				execStdCommand(device, "shell", "pm", "clear", packages[index-1])
-			}
+		for _, pkg := range packages {
+			execStdCommand(device, "shell", "pm", "clear", pkg)
 		}
-		return
 	} else {
 		devices := selectDevice(false)
 		if len(devices) == 0 {
@@ -518,49 +491,16 @@ func execForceStopApp(keyword string) {
 			return
 		}
 		device := devices[0]
-		packages, err := getPackages(device, &keyword)
-		if err != nil {
-			fmt.Println("failed to get packages:", err)
+		packages, err := selectPackage(device, &keyword, false)
+		if err != nil || len(packages) == 0 {
+			fmt.Println("failed to select packages:", err)
 			return
 		}
 
-		// 3. 匹配结果处理
-		if len(packages) == 0 {
-			fmt.Println("no matching packages found.")
-			return
-		} else if len(packages) == 1 {
-			fmt.Printf("Found one matching package: %s. Confirm force stop app? (y/N): ", packages[0])
-			var input string
-			fmt.Scanln(&input)
-			if strings.ToLower(input) == "y" {
-				execStdCommand(device, "shell", "am", "force-stop", packages[0])
-			} else {
-				fmt.Println("force stop app cancelled.")
-			}
-			return
-		} else {
-			fmt.Println("Multiple matching packages found:")
-			for i, pkg := range packages {
-				fmt.Printf("[%d] %s\n", i+1, pkg)
-			}
-			fmt.Print("Please enter the index to force stop app, or type \"all\" to force stop all matched package: ")
-			var input string
-			fmt.Scanln(&input)
-			input = strings.TrimSpace(strings.ToLower(input))
-			if input == "all" {
-				for _, pkg := range packages {
-					execStdCommand(device, "shell", "am", "force-stop", pkg)
-				}
-			} else {
-				index, err := strconv.Atoi(input)
-				if err != nil || index <= 0 || index > len(packages) {
-					fmt.Println("Invalid index, operation cancelled.")
-					return
-				}
-				execStdCommand(device, "shell", "am", "force-stop", packages[index-1])
-			}
+		for _, pkg := range packages {
+			execStdCommand(device, "shell", "am", "force-stop", pkg)
 		}
-		return
+
 	} else {
 		devices := selectDevice(false)
 		if len(devices) == 0 {
@@ -568,6 +508,31 @@ func execForceStopApp(keyword string) {
 		}
 		for _, device := range devices {
 			execStdCommand(device, "shell", "am", "force-stop", keyword)
+		}
+	}
+}
+
+func execStartApp(keyword string) {
+	if strings.HasPrefix(keyword, "*") && strings.HasSuffix(keyword, "*") {
+		devices := selectDevice(true)
+		if len(devices) == 0 {
+			return
+		}
+		device := devices[0]
+		packages, err := selectPackage(device, &keyword, true)
+		if err != nil || len(packages) == 0 {
+			fmt.Println("failed to get packages:", err)
+			return
+		}
+
+		execStdCommand(device, "shell", "monkey", "-p", packages[0], "-c", "android.intent.category.LAUNCHER", "1")
+	} else {
+		devices := selectDevice(false)
+		if len(devices) == 0 {
+			return
+		}
+		for _, device := range devices {
+			execStdCommand(device, "shell", "monkey", "-p", keyword, "-c", "android.intent.category.LAUNCHER", "1")
 		}
 	}
 }
