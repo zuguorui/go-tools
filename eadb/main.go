@@ -264,7 +264,7 @@ func execRootCommand(outputStream io.Writer, errorStream io.Writer, device strin
 }
 
 func execOpenSetting() {
-	devices := selectDevice(true)
+	devices := selectDevice(false)
 	if len(devices) == 0 {
 		return
 	}
@@ -274,7 +274,7 @@ func execOpenSetting() {
 }
 
 func execOpenLauncher() {
-	devices := selectDevice(true)
+	devices := selectDevice(false)
 	if len(devices) == 0 {
 		return
 	}
@@ -294,7 +294,7 @@ func execListPackages() {
 }
 
 func execScreenShot(localPath string) {
-	devices := selectDevice(true)
+	devices := selectDevice(false)
 	if len(devices) == 0 {
 		return
 	}
@@ -313,7 +313,7 @@ func execScreenShot(localPath string) {
 }
 
 func execScreenRecord(localPath string, duration *int) {
-	devices := selectDevice(true)
+	devices := selectDevice(false)
 	if len(devices) == 0 {
 		return
 	}
